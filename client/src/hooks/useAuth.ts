@@ -10,6 +10,7 @@ interface User {
   isSeller: boolean;
   credits: string;
   loyaltyLevel: string;
+  isEmulator?: boolean;
 }
 
 interface AuthState {

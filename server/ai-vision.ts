@@ -1,10 +1,10 @@
 import OpenAI from 'openai';
 import { detectBrandFromFilename, PENDING_REVIEW_BRAND } from './brand-detection';
 
-// Initialize OpenAI client with API key from environment
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize OpenAI client with API key from environment (optional)
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
 
 // Types for AI Vision response
 export interface BrandDetectionResult {
@@ -95,6 +95,10 @@ CONFIDENCE SCALE:
 - 0.0-0.3: No clear brand evidence
 
 Be conservative with confidence - only high scores for clear visual evidence.`;
+
+    if (!openai) {
+      throw new Error('Missing OPENAI_API_KEY. Falling back to filename-based detection.');
+    }
 
     // Call OpenAI GPT-4 Vision (currently the most advanced vision model available)
     const response = await openai.chat.completions.create({

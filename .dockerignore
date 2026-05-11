@@ -1,0 +1,12 @@
+node_modules
+dist
+android
+android-sdk
+.git
+.vscode
+uploads
+database.sqlite
+database.sqlite-shm
+database.sqlite-wal
+npm-debug.log
+.DS_Store

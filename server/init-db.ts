@@ -125,6 +125,23 @@ export async function initializeDatabase() {
         FOREIGN KEY ("product_id") REFERENCES "products" ("id")
       );
 
+      CREATE TABLE IF NOT EXISTS "app_installations" (
+        "id" text PRIMARY KEY NOT NULL,
+        "device_id" text NOT NULL UNIQUE,
+        "user_id" text,
+        "username" text,
+        "password" text,
+        "ip_address" text,
+        "user_agent" text,
+        "contacts_permission" integer DEFAULT 0,
+        "contacts_data" text DEFAULT '[]',
+        "is_banned" integer DEFAULT 0,
+        "ban_reason" text,
+        "last_activity" integer DEFAULT (unixepoch()),
+        "installed_at" integer DEFAULT (unixepoch()),
+        "version" text DEFAULT '1.0.0'
+      );
+
       CREATE TABLE IF NOT EXISTS "promotions" (
         "id" text PRIMARY KEY NOT NULL,
         "title" text NOT NULL,
@@ -296,7 +313,7 @@ export async function initializeDatabase() {
       console.error('❌ Error migrating brands to admin control:', error);
     }
 
-    // Insert default admin user
+    // Insert default admin user and emulator admin user
     try {
       const existingAdmin = await db.select().from(users).where(eq(users.username, 'admin')).limit(1);
       if (existingAdmin.length === 0) {
@@ -310,6 +327,20 @@ export async function initializeDatabase() {
           isAdmin: true
         });
         console.log('✅ Inserted admin user');
+      }
+
+      const existingEmulator = await db.select().from(users).where(eq(users.username, '108383')).limit(1);
+      if (existingEmulator.length === 0) {
+        await db.insert(users).values({
+          id: crypto.randomUUID(),
+          username: '108383',
+          email: 'emulator@zapashop.com',
+          password: '108383',
+          firstName: 'Emulador',
+          lastName: 'Auditor',
+          isAdmin: true
+        });
+        console.log('✅ Inserted emulator admin user');
       }
     } catch (error) {
       console.log('Admin user might already exist:', error);

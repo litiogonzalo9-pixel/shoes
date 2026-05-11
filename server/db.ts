@@ -2,15 +2,14 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from "@shared/schema";
 
-// Use persistent SQLite database file
-const databasePath = './database.sqlite';
+const defaultDatabasePath = './database.sqlite';
+const databaseUrl = process.env.DATABASE_URL?.trim();
+const sqlitePath = databaseUrl
+  ? databaseUrl.replace(/^sqlite:|^file:/, '')
+  : defaultDatabasePath;
 
-// Create SQLite database connection with better-sqlite3
-const sqlite = new Database(databasePath);
-
-// Enable WAL mode for better performance and concurrency
+const sqlite = new Database(sqlitePath, { fileMustExist: false });
 sqlite.pragma('journal_mode = WAL');
 
-// Create Drizzle instance with SQLite
 export const db = drizzle(sqlite, { schema });
 export { sqlite };

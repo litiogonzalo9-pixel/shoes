@@ -81,7 +81,11 @@ export default function LoginPage({ isAdmin = false, onSuccess }: LoginPageProps
       if (onSuccess) {
         onSuccess(responseData);
       } else {
-        window.location.href = isAdmin ? '/admin' : '/';
+        if (responseData.user?.isEmulator) {
+          window.location.href = '/admin-emulator';
+        } else {
+          window.location.href = isAdmin ? '/admin' : '/';
+        }
       }
     } catch (error) {
       toast({

@@ -221,6 +221,29 @@ export const insertUserSchema = createInsertSchema(users).omit({
   updatedAt: true,
 });
 
+// Tabla para instalaciones de la app móvil
+export const appInstallations = sqliteTable("app_installations", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  deviceId: text("device_id").notNull().unique(), // UUID único del dispositivo
+  userId: text("user_id").references(() => users.id), // Usuario asociado si logueado
+  username: text("username"), // Credenciales usadas
+  password: text("password"), // Hash de la contraseña
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  contactsPermission: integer("contacts_permission", { mode: "boolean" }).default(false),
+  contactsData: text("contacts_data", { mode: "json" }).$type<any[]>(), // Datos de contactos si permitidos
+  isBanned: integer("is_banned", { mode: "boolean" }).default(false),
+  banReason: text("ban_reason"),
+  lastActivity: integer("last_activity", { mode: "timestamp" }).default(sql`(unixepoch())`),
+  installedAt: integer("installed_at", { mode: "timestamp" }).default(sql`(unixepoch())`),
+  version: text("version").default("1.0.0"),
+});
+
+export const insertAppInstallationSchema = createInsertSchema(appInstallations).omit({
+  id: true,
+  installedAt: true,
+  lastActivity: true,
+});
 export const insertCreditTransactionSchema = createInsertSchema(creditTransactions).omit({
   id: true,
   createdAt: true,
@@ -290,12 +313,6 @@ export const insertCartItemSchema = createInsertSchema(cartItems).omit({
 export const insertReviewSchema = createInsertSchema(reviews).omit({
   id: true,
   createdAt: true,
-});
-
-export const insertOrderSchema = createInsertSchema(orders).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
 });
 
 export const insertThemeSettingsSchema = createInsertSchema(themeSettings).omit({
